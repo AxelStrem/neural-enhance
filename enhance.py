@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """                          _              _                           
   _ __   ___ _   _ _ __ __ _| |   ___ _ __ | |__   __ _ _ __   ___ ___  
  | '_ \ / _ \ | | | '__/ _` | |  / _ \ '_ \| '_ \ / _` | '_ \ / __/ _ \ 
@@ -90,6 +91,15 @@ class ansi:
     CYAN_B = '\033[1;36m'
     ENDC = '\033[0m'
 
+		
+def factors(n):
+    while n > 1:
+        for i in range(2, n + 1):
+            if n % i == 0:
+                n /= i
+                yield i
+                break
+
 def error(message, *lines):
     string = "\n{}ERROR: " + message + "{}\n" + "\n".join(lines) + ("{}\n" if lines else "{}")
     print(string.format(ansi.RED_B, ansi.RED, ansi.ENDC))
@@ -138,7 +148,7 @@ class DataLoader(threading.Thread):
         super(DataLoader, self).__init__(daemon=True)
         self.data_ready = threading.Event()
         self.data_copied = threading.Event()
-
+        
         self.orig_shape, self.seed_shape = args.batch_shape, args.batch_shape // args.zoom
 
         self.orig_buffer = np.zeros((args.buffer_size, 3, self.orig_shape, self.orig_shape), dtype=np.float32)
@@ -190,7 +200,7 @@ class DataLoader(threading.Thread):
 
         if args.train_noise is not None:
             seed += scipy.random.normal(scale=args.train_noise, size=(seed.shape[0], seed.shape[1], 1))
-
+        
         for _ in range(seed.shape[0] * seed.shape[1] // (args.buffer_fraction * self.seed_shape ** 2)):
             h = random.randint(0, seed.shape[0] - self.seed_shape)
             w = random.randint(0, seed.shape[1] - self.seed_shape)
@@ -284,23 +294,28 @@ class Model(object):
 
     def setup_generator(self, input, config):
         for k, v in config.items(): setattr(args, k, v)
-        args.zoom = 2**(args.generator_upscale - args.generator_downscale)
-
+       
+        args.zoom = int(args.generator_upscale/args.generator_downscale)
+        
         units_iter = extend(args.generator_filters)
         units = next(units_iter)
         self.make_layer('iter.0', input, units, filter_size=(7,7), pad=(3,3))
-
-        for i in range(0, args.generator_downscale):
-            self.make_layer('downscale%i'%i, self.last_layer(), next(units_iter), filter_size=(4,4), stride=(2,2))
+        
+        k = 0
+        for i in factors(args.generator_downscale):
+            self.make_layer('downscale%i'%k, self.last_layer(), next(units_iter), filter_size=(4,4), stride=(2,2))
+            k=k+1
 
         units = next(units_iter)
         for i in range(0, args.generator_blocks):
             self.make_block('iter.%i'%(i+1), self.last_layer(), units)
 
-        for i in range(0, args.generator_upscale):
+        k = 0
+        for i in factors(args.generator_upscale):
             u = next(units_iter)
-            self.make_layer('upscale%i.2'%i, self.last_layer(), u*4)
-            self.network['upscale%i.1'%i] = SubpixelReshuffleLayer(self.last_layer(), u, 2)
+            self.make_layer('upscale%i.2'%k, self.last_layer(), u*(i**2))
+            self.network['upscale%i.1'%k] = SubpixelReshuffleLayer(self.last_layer(), u, i)
+            k=k+1
 
         self.network['out'] = ConvLayer(self.last_layer(), 3, filter_size=(7,7), pad=(3,3), nonlinearity=None)
 
@@ -545,8 +560,8 @@ class NeuralEnhancer(object):
         return map_Hb(inv_Ha(A).clip(0.0, 255.0))
 
     def process(self, original):
-        # Snap the image to a shape that's compatible with the generator (2x, 4x)
-        s = 2 ** max(args.generator_upscale, args.generator_downscale)
+        # Snap the image to a shape that's compatible with the generator
+        s = max(args.generator_upscale, args.generator_downscale)
         by, bx = original.shape[0] % s, original.shape[1] % s
         original = original[by-by//2:original.shape[0]-by//2,bx-bx//2:original.shape[1]-bx//2,:]
 
@@ -573,7 +588,7 @@ class NeuralEnhancer(object):
 
 if __name__ == "__main__":
     if args.train:
-        args.zoom = 2**(args.generator_upscale - args.generator_downscale)
+        args.zoom = args.generator_upscale//args.generator_downscale
         enhancer = NeuralEnhancer(loader=True)
         enhancer.train()
     else:
